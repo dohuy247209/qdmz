@@ -107,19 +107,24 @@
     ctx.fillText(text, x, y);
   }
 
-  /** Vẽ lưới editor (cellPx = px/1cell, w/h theo cell). */
+  /** Vẽ lưới editor (cellPx = px/1cell, w/h theo cell).
+   *  Khi fit sandbox rất lớn (cellPx < 6) chỉ vẽ đường major (25 ô) cho khỏi nhiễu. */
   function drawGrid(ctx, x, y, w, h, cellPx) {
+    const showMinor = cellPx >= 6;
+    const major = cellPx < 6 ? 25 : 5;
     ctx.save();
     ctx.lineWidth = 1;
     for (let vx = 0; vx <= w; vx++) {
-      ctx.strokeStyle = (vx % 5 === 0) ? COLORS.gridMajor : COLORS.grid;
+      if (!showMinor && vx % major !== 0) continue;
+      ctx.strokeStyle = (vx % major === 0) ? COLORS.gridMajor : COLORS.grid;
       ctx.beginPath();
       ctx.moveTo(Math.round(x + vx * cellPx) + 0.5, y);
       ctx.lineTo(Math.round(x + vx * cellPx) + 0.5, y + h * cellPx);
       ctx.stroke();
     }
     for (let vy = 0; vy <= h; vy++) {
-      ctx.strokeStyle = (vy % 5 === 0) ? COLORS.gridMajor : COLORS.grid;
+      if (!showMinor && vy % major !== 0) continue;
+      ctx.strokeStyle = (vy % major === 0) ? COLORS.gridMajor : COLORS.grid;
       ctx.beginPath();
       ctx.moveTo(x, Math.round(y + vy * cellPx) + 0.5);
       ctx.lineTo(x + w * cellPx, Math.round(y + vy * cellPx) + 0.5);

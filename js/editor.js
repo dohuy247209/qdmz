@@ -72,7 +72,8 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const pad = 32;
     const fit = Math.min((W - pad * 2) / level.box.w, (H - pad * 2) / level.box.h);
-    const scale = Math.max(4, fit * zoom);
+    // Cho phép FIT sandbox rất rộng (vd 512x288) xuống màn hình (scale < 4).
+    const scale = Math.max(0.5, fit * zoom);
     const bw = level.box.w * scale, bh = level.box.h * scale;
     let ox = pan.x == null ? (W - bw) / 2 : pan.x;
     let oy = pan.y == null ? (H - bh) / 2 : pan.y;

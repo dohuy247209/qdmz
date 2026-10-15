@@ -4,7 +4,7 @@
  * - Double jump mặc định: 2 nhảy liên tiếp; wall trong tầm chạm -> nhảy
  *   "miễn phí" (wall-jump), chạm sàn -> refresh.
  * - Motion (path/spin): tốc độ KHÔNG đổi, đổi hướng TỨC THÌ – không gia tốc.
- * - Camera bám mượt (exponential) quanh player, clamp trong sandbox.
+ * - Camera bám mượt (exponential) VÀ LUÔN lấy square làm tâm (không clamp).
  * - Saw trúng -> chết -> respawn checkpoint gần nhất. Timer speedrun.
  */
 (function (global) {
@@ -13,16 +13,27 @@
   const M = global.QMMotion;
 
   const PHYS = {
-    speed: 10,       // tốc độ ngang của square (cell/giây)
-    gravity: 60,     // trọng lực (cell/giây^2) – CHỈ áp dụng cho square
-    jumpV: 21,       // vận tốc nhảy (cell/giây) -> độ cao ~3.7 ô
-    maxFall: 42,
-    nearDist: 0.5,   // nửa bề rộng square (0.5 ô)
-    reach: 1.0,      // tầm chạm wall cho nhảy miễn phí = nearDist + half size
-    airJumps: 2,     // SỐ NHẢY LIÊN TIẾP MẶC ĐỊNH (từ sàn + 1 air jump)
-    deathTime: 0.35, // thời gian chết trước khi respawn
-    spawnGrace: 0.3, // miễn nhiễm sau khi respawn
-    camTau: 0.12     // hằng số thời gian bám camera (giây) – càng nhỏ càng bám sát
+    speed: 10,        // tốc độ ngang của square (cell/giây)
+    gravity: 80,      // trọng lực (cell/giây^2) – [60] CHỈ áp dụng cho square
+    jumpV: 30,        // vận tốc nhảy (cell/giây) -> [21] độ cao ~3.7 ô
+    // maxFall: KHÔNG giới hạn – trọng lực tích lũy tự do (không cap)
+    nearDist: 0.5,    // nửa bề rộng square (0.5 ô)
+    reach: 1.0,       // tầm chạm wall cho nhảy miễn phí = nearDist + half size
+    airJumps: 2,      // SỐ NHẢY LIÊN TIẾP MẶC ĐỊNH (từ sàn + 1 air jump)
+    deathTime: 0.35,  // thời gian chết trước khi respawn
+    spawnGrace: 0,    // KHÔNG invulnerable sau respawn (đã bỏ)
+    camTau: 0.12,     // tau camera bình thường (giây)
+    camChaseTau: 0.18 // tau camera khi đuổi về sau respawn [0.02] (nhanh ~6×)
+  };
+
+  // ---- Cấu hình render / FOV (chỉnh ở đây) ----
+  const VIEW = {
+    fovW: 30,      // số ô hiển thị theo chiều NGANG [34] (tăng = zoom out, giảm = zoom in)
+    fovH: 20,      // số ô hiển thị theo chiều DỌC [22]
+    pad: 8,        // padding px quanh viewport
+    hudRatio: 0.075, // chiều cao HUD = max(44px, H * hudRatio)
+    hudMin: 44,    // chiều cao HUD tối thiểu (px)
+    particleFade: 0.6 // thời gian (giây) mảnh firework mờ hoàn toàn
   };
 
   const STEP = 1 / 120; // fixed timestep
@@ -63,12 +74,14 @@
     this._jumpQueued = false;
     // Camera theo player (mượt); snap theo spawn trong load()/restart().
     this.cam = { x: 0, y: 0 };
+    this._camChase = false; // true = đang đuổi nhanh về spawn sau khi chết
+    this._parts = []; // hạt "firework" trắng khi chết
     // Transform wall/saw (QMMotion) tại thời điểm hiện tại / bước trước.
     this._wm = null;
     this._wmPrev = null;
     this.player = {
       x: 0, y: 0, w: 1, h: 1, vx: 0, vy: 0, grounded: false,
-      dead: false, deadT: 0, grace: 0,
+      dead: false, deadT: 0, grace: 0, angle: 0, // angle = nghiêng thị giác theo wall đang đứng (rad)
       airJumps: PHYS.airJumps, // số air jump còn lại
       groundIdx: null          // index wall đang đứng (để "mang theo" khi nó chuyển động)
     };
@@ -89,6 +102,7 @@
     this.hazardT = 0;
     this.activeCheckpoint = -1;
     this.respawn = { x: level.spawn.x, y: level.spawn.y };
+    this._parts = [];
     this._resetPlayer(true);
     this._wm = M.resolve(level, 0);
     this._wmPrev = this._wm;
@@ -108,11 +122,19 @@
     p.dead = false;
     p.deadT = 0;
     p.grace = PHYS.spawnGrace;
+    p.angle = 0;
     if (hard) p.grounded = false;
-    p.airJumps = PHYS.airJumps; // nhảy đôi làm mới khi chạm sàn
+    p.airJumps = PHYS.airJumps;
     p.groundIdx = null;
-    this.cam.x = p.x + p.w / 2; // respawn -> camera snap ngay (không bám dần)
-    this.cam.y = p.y + p.h / 2;
+    if (hard) {
+      // Load level lần đầu / restart hoàn toàn -> snap camera ngay
+      this.cam.x = p.x + p.w / 2;
+      this.cam.y = p.y + p.h / 2;
+      this._camChase = false;
+    } else {
+      // Respawn sau khi chết -> GIỮ nguyên vị trí camera, bật chế độ đuổi nhanh
+      this._camChase = true;
+    }
   };
 
   Game.prototype.restart = function () {
@@ -121,6 +143,7 @@
     this.hazardT = 0;
     this.activeCheckpoint = -1;
     this.respawn = { x: this.level.spawn.x, y: this.level.spawn.y };
+    this._parts = [];
     this._resetPlayer(true);
     this._wm = M.resolve(this.level, 0);
     this._wmPrev = this._wm;
@@ -268,6 +291,20 @@
     this._wmPrev = this._wm || M.resolve(lv, this.time - dt);
     this._wm = M.resolve(lv, this.time);
 
+    // Hạt "firework" (break khi chết): bay nhẹ, tan sau 1.5–2s.
+    if (this._parts.length) {
+      for (let i = this._parts.length - 1; i >= 0; i--) {
+        const q = this._parts[i];
+        q.x += q.vx * dt;
+        q.y += q.vy * dt;
+        const damp = 1 - Math.min(1, 1.5 * dt);
+        q.vx *= damp;
+        q.vy = q.vy * damp + 2.5 * dt; // chìm xuống rất nhẹ
+        q.life -= dt;
+        if (q.life <= 0) this._parts.splice(i, 1);
+      }
+    }
+
     if (p.dead) {
       p.deadT -= dt;
       if (p.deadT <= 0) this._resetPlayer(false);
@@ -300,23 +337,26 @@
     // - trên SÀN hoặc wall trong tầm chạm -> nhảy "miễn phí", còn airJumps = 1.
     // - đang bay, còn airJumps > 0 -> tiêu 1 lần (air jump); hết -> không nhảy.
     // - chạm sàn -> refresh lại đủ 2.
+    // Nhảy LUÔN theo trục tuyệt đối (vx/vy world), KHÔNG phụ thuộc góc nghiêng wall.
     const near = this._nearWall(p, solids);
     if (this._jumpQueued) {
       this._jumpQueued = false;
       if (p.grounded || near) {
-        p.vy = -PHYS.jumpV;
+        p.vy = -PHYS.jumpV; // tuyệt đối, không bị nghiêng bởi wall.angle
+        p.vx = (this.input.right ? 1 : 0) - (this.input.left ? 1 : 0); // re-apply ngang
+        p.vx *= PHYS.speed;
         p.grounded = false;
         p.airJumps = PHYS.airJumps - 1; // nhảy đầu, giữ 1 air jump
       } else if (p.airJumps > 0) {
-        p.vy = -PHYS.jumpV;
+        p.vy = -PHYS.jumpV; // tuyệt đối
         p.airJumps--;
       }
     }
     if (p.grounded) p.airJumps = PHYS.airJumps;
 
     // Gravity – CHỈ square (wall/saw là kinematic, không chịu trọng lực).
+    // KHÔNG giới hạn tốc độ rơi – trọng lực tích lũy tự do.
     p.vy += PHYS.gravity * dt;
-    if (p.vy > PHYS.maxFall) p.vy = PHYS.maxFall;
 
     // Di chuyển trục X rồi tách bằng SAT (hỗ trợ wall xoay).
     p.x += p.vx * dt;
@@ -347,6 +387,14 @@
         if (p.vx * mtv.x + p.vy * mtv.y < 0) p.vy = 0;
       }
     }
+
+    // Rule: đang đứng trên wall nghiêng/spin -> square NGHIÊNG THEO (thị giác);
+    // nhảy vẫn thẳng trục TUYỆT ĐỐI (vy thuần dọc, không phụ thuộc wall).
+    let tiltTarget = 0;
+    if (p.grounded && p.groundIdx != null && this._wm.walls[p.groundIdx]) {
+      tiltTarget = M.angleOf(this._wm.walls[p.groundIdx]);
+    }
+    p.angle += (tiltTarget - p.angle) * (1 - Math.exp(-dt / 0.07));
 
     // Kiểm tra saw (chết) – tâm saw theo transform (path/spin/attach).
     if (p.grace <= 0) {
@@ -379,10 +427,17 @@
       if (this.opts.onWin) this.opts.onWin(this.time);
     }
 
-    // Camera bám MƯỢT quanh player (exponential easing, không nhảy thô).
-    const k = 1 - Math.exp(-dt / PHYS.camTau);
-    this.cam.x += (p.x + p.w / 2 - this.cam.x) * k;
-    this.cam.y += (p.y + p.h / 2 - this.cam.y) * k;
+    // Camera bám MƯỢT quanh player (exponential easing).
+    // camChase = đuổi nhanh sau respawn (tau nhỏ hơn nhiều); tắt khi đủ gần.
+    const tau = this._camChase ? PHYS.camChaseTau : PHYS.camTau;
+    const k = 1 - Math.exp(-dt / tau);
+    const tx = p.x + p.w / 2, ty = p.y + p.h / 2;
+    this.cam.x += (tx - this.cam.x) * k;
+    this.cam.y += (ty - this.cam.y) * k;
+    // Tắt chase mode khi camera đã đủ gần player (<= 0.5 ô)
+    if (this._camChase && Math.hypot(tx - this.cam.x, ty - this.cam.y) <= 0.5) {
+      this._camChase = false;
+    }
   };
 
   // Tầm chạm wall: tâm player tới OBB tường <= 1.0 ô (nearDist + half size).
@@ -409,6 +464,19 @@
     p.deadT = PHYS.deathTime;
     p.vx = 0;
     p.vy = 0;
+    // "Firework" trắng: ~16 mảnh nhỏ bay nhẹ ra mọi hướng, tan sau 1.5–2s.
+    const pcx = p.x + p.w / 2, pcy = p.y + p.h / 2;
+    for (let i = 0; i < 16; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1.5 + Math.random() * 5;
+      this._parts.push({
+        x: pcx, y: pcy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        rot: Math.random() * Math.PI, // hướng mảnh trắng
+        len: 0.10 + Math.random() * 0.14, // độ dài mảnh (đơn vị ô)
+        life: 1.5 + Math.random() * 0.5   // sống 1.5–2s rồi mất
+      });
+    }
     if (this.opts.onDeath) this.opts.onDeath();
   };
 
@@ -435,20 +503,16 @@
     ctx.fillRect(0, 0, W, H);
     if (!lv) return;
 
-    // Scale: sandbox nhỏ -> fit; sandbox lớn -> thấy ~34x22 ô, camera pan.
-    const pad = 8;
-    const hudH = Math.max(44, H * 0.075);
+    // Scale: sandbox nhỏ -> fit; sandbox lớn -> camera pan theo player.
+    // VIEW.fovW / VIEW.fovH kiểm soát số ô hiển thị (= FOV).
+    const pad = VIEW.pad;
+    const hudH = Math.max(VIEW.hudMin, H * VIEW.hudRatio);
     const vw = W - 2 * pad;
     const vh = H - hudH - pad;
-    const scale = Math.min(vw / Math.min(lv.box.w, 34), vh / Math.min(lv.box.h, 22));
-    // Camera theo player (đã bám mượt trong _step), clamp không nhìn ra ngoài.
-    let cx = this.cam.x, cy = this.cam.y;
-    if (lv.box.w * scale <= vw) cx = lv.box.w / 2;
-    else cx = Math.min(lv.box.w - vw / (2 * scale), Math.max(vw / (2 * scale), cx));
-    if (lv.box.h * scale <= vh) cy = lv.box.h / 2;
-    else cy = Math.min(lv.box.h - vh / (2 * scale), Math.max(vh / (2 * scale), cy));
-    this.cam.x = cx;
-    this.cam.y = cy;
+    const scale = Math.min(vw / Math.min(lv.box.w, VIEW.fovW), vh / Math.min(lv.box.h, VIEW.fovH));
+    // Camera LUÔN lấy square làm tâm: border sandbox chỉ là wall "vô hạn",
+    // khung nhìn KHÔNG bị clamp (ra ngoài border = nền trắng vô tận).
+    const cx = this.cam.x, cy = this.cam.y;
     const vt = { scale: scale, ox: pad + vw / 2 - cx * scale, oy: hudH + vh / 2 - cy * scale };
     this._vt = vt;
     const boxPx = { x: vt.ox, y: vt.oy, w: lv.box.w * vt.scale, h: lv.box.h * vt.scale };
@@ -466,21 +530,23 @@
     }
 
     // Spawn / goal / checkpoints: khối vuông đen cùng cỡ player.
+    // QUAN TRỌNG: dùng vt (camera offset) chứ không phải ms thuần.
     const ms = vt.scale; // 1 ô
+    // Camera-aware vị trí: pixel = vt.ox + cell * vt.scale (vt.ox đã bao gồm cam offset)
     R.drawMarker(ctx, vt.ox + lv.spawn.x * ms, vt.oy + lv.spawn.y * ms, ms);
     R.drawMarker(ctx, vt.ox + lv.goal.x * ms, vt.oy + lv.goal.y * ms, ms);
     for (let i = 0; i < lv.checkpoints.length; i++) {
-      const c = lv.checkpoints[i];
-      const cx = vt.ox + c.x * ms, cy = vt.oy + c.y * ms;
+      const chk = lv.checkpoints[i];
+      const cpx = vt.ox + chk.x * ms, cpy = vt.oy + chk.y * ms;
       if (i === this.activeCheckpoint) {
         // Checkpoint đã kích hoạt: viền trắng để phân biệt.
         ctx.fillStyle = R.COLORS.marker;
-        ctx.fillRect(cx, cy, ms, ms);
+        ctx.fillRect(cpx, cpy, ms, ms);
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = Math.max(2, ms * 0.08);
-        ctx.strokeRect(cx + ctx.lineWidth / 2, cy + ctx.lineWidth / 2, ms - ctx.lineWidth, ms - ctx.lineWidth);
+        ctx.strokeRect(cpx + ctx.lineWidth / 2, cpy + ctx.lineWidth / 2, ms - ctx.lineWidth, ms - ctx.lineWidth);
       } else {
-        R.drawMarker(ctx, cx, cy, ms);
+        R.drawMarker(ctx, cpx, cpy, ms);
       }
     }
 
@@ -495,12 +561,34 @@
       R.drawSaw(ctx, sx, sy, s.size * vt.scale, angle);
     }
 
-    // Player.
+    // Player: vuông CHỈ nghiêng thị giác theo wall đang đứng (p.angle).
     const p = this.player;
     if (!p.dead) {
-      const blink = p.grace > 0 && Math.floor(this.hazardT * 20) % 2 === 0;
-      ctx.fillStyle = blink ? '#dddddd' : R.COLORS.player;
-      ctx.fillRect(vt.ox + p.x * vt.scale, vt.oy + p.y * vt.scale, p.w * vt.scale, p.h * vt.scale);
+      ctx.save();
+      ctx.translate(vt.ox + (p.x + p.w / 2) * vt.scale, vt.oy + (p.y + p.h / 2) * vt.scale);
+      ctx.rotate(p.angle || 0);
+      ctx.fillStyle = R.COLORS.player;
+      ctx.fillRect(-p.w * vt.scale / 2, -p.h * vt.scale / 2, p.w * vt.scale, p.h * vt.scale);
+      ctx.restore();
+    }
+
+    // Hạt break (firework trắng): mảnh nhỏ, mờ dần rồi biến mất.
+    if (this._parts.length) {
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.5, vt.scale * 0.055);
+      for (let i = 0; i < this._parts.length; i++) {
+        const q = this._parts[i];
+        const half = q.len * vt.scale / 2;
+        const dx = Math.cos(q.rot) * half, dy = Math.sin(q.rot) * half;
+        const px = vt.ox + q.x * vt.scale, py = vt.oy + q.y * vt.scale;
+        ctx.globalAlpha = Math.max(0, Math.min(1, q.life / VIEW.particleFade));
+        ctx.beginPath();
+        ctx.moveTo(px - dx, py - dy);
+        ctx.lineTo(px + dx, py + dy);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     // HUD: TIME trái, LEVEL phải (khung trên, ngoài box).

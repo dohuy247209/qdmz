@@ -331,18 +331,21 @@
     }, null, pretty === false ? 0 : 2);
   }
 
-  /** Level rỗng mặc định cho editor – sandbox 64x36 (lớn, vừa camera mới). */
+  /**
+   * Level rỗng mặc định cho editor – sandbox RỘNG 512x288 (custom, ~8x cũ:
+   * đủ chỗ xây level lớn; ô grid/viewport vẫn fit bằng phím 0).
+   */
   function makeDefaultLevel() {
     return {
       format: LEVEL_FORMAT,
       version: VERSION,
       name: 'Level mới',
-      box: { w: 64, h: 36 },
-      spawn: { x: 2, y: 33 },
-      goal: { x: 60, y: 33 },
+      box: { w: 512, h: 288 },
+      spawn: { x: 2, y: 283 },
+      goal: { x: 506, y: 283 },
       checkpoints: [],
       walls: [
-        { x: 0, y: 34, w: 64, h: 2, rot: 0, motion: staticMotion(), attach: null }
+        { x: 0, y: 284, w: 512, h: 4, rot: 0, motion: staticMotion(), attach: null }
       ],
       saws: []
     };
