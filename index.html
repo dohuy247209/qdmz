@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quad Maze – JS Clone</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Menu chính -->
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1>QUAD&nbsp;MAZE</h1>
+      <p class="subtitle">JS clone – W/A/S/D hoặc phím mũi tên để di chuyển<br>
+        Backspace / Space / Click để nhảy (multijump khi gần wall)</p>
+      <button id="btn-play" class="big">CHƠI</button>
+      <div class="row">
+        <button id="btn-levels">Chọn level</button>
+        <button id="btn-editor">Editor</button>
+      </div>
+      <div class="row">
+        <button id="btn-import">Import JSON…</button>
+        <button id="btn-export-all">Export pack</button>
+      </div>
+      <input type="file" id="file-input" accept=".json,application/json" hidden>
+      <p class="hint" id="import-msg"></p>
+    </div>
+  </div>
+
+  <!-- Chọn level -->
+  <div id="level-select" class="overlay hidden">
+    <div class="panel">
+      <h2>CHỌN LEVEL</h2>
+      <div id="level-grid" class="level-grid"></div>
+      <div class="row">
+        <button id="btn-import2">Import JSON…</button>
+        <button id="btn-back-menu">Quay lại</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Win overlay -->
+  <div id="win-overlay" class="overlay hidden">
+    <div class="panel">
+      <h2>HOÀN THÀNH!</h2>
+      <p id="win-time" class="subtitle"></p>
+      <div class="row">
+        <button id="btn-next" class="big">LEVEL TIẾP →</button>
+      </div>
+      <div class="row">
+        <button id="btn-retry">Chơi lại</button>
+        <button id="btn-win-menu">Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/render.js"></script>
+  <script src="js/format.js"></script>
+  <script src="js/levels.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "quadmaze",
+  "version": "1.0.0",
+  "description": "Clone web tĩnh (HTML/CSS/JS thuần, **không cần build/bundler**) của game platformer dính tường\r \"Quad Maze\": di chuyển khối vuông trắng, nhảy đa đoạn dính tường, né saw xoay, về checkpoint.",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quad Maze – Level Editor</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="editor-page">
+
+  <!-- Thanh công cụ trên -->
+  <header id="ed-top">
+    <span class="logo">QUAD&nbsp;MAZE&nbsp;EDITOR</span>
+    <button id="ed-new">Mới</button>
+    <button id="ed-undo" title="Ctrl+Z">Undo</button>
+    <span class="sep"></span>
+    <label>Tên: <input id="ed-name" type="text" maxlength="40"></label>
+    <label>Box: <input id="ed-bw" type="number" min="8" max="300" class="narrow"> ×
+      <input id="ed-bh" type="number" min="6" max="200" class="narrow"></label>
+    <span class="sep"></span>
+    <button id="ed-test" class="accent">▶ Test</button>
+    <button id="ed-export">Export JSON</button>
+    <button id="ed-import">Import JSON…</button>
+    <button id="ed-play">Về game</button>
+    <input type="file" id="ed-file" accept=".json,application/json" hidden>
+    <span id="ed-msg" class="hint"></span>
+  </header>
+
+  <div id="ed-body">
+    <!-- Palette bên trái -->
+    <aside id="ed-tools">
+      <h3>Công cụ</h3>
+      <button class="tool active" data-tool="select">✥ Chọn / Di chuyển<span class="key">1</span></button>
+      <button class="tool" data-tool="wall">▢ Tường (kéo)<span class="key">2</span></button>
+      <button class="tool" data-tool="saw">✳ Saw (kéo = to)<span class="key">3</span></button>
+      <button class="tool" data-tool="spawn">■ Spawn<span class="key">4</span></button>
+      <button class="tool" data-tool="goal">■ Goal<span class="key">5</span></button>
+      <button class="tool" data-tool="checkpoint">■ Checkpoint<span class="key">6</span></button>
+      <button class="tool" data-tool="erase">⌫ Xóa<span class="key">7</span></button>
+
+      <h3>Thành phần</h3>
+      <ul id="ed-list"></ul>
+
+      <div class="legend">
+        <p><span class="sw white"></span> Wall (trắng)</p>
+        <p><span class="sw black"></span> Saw / spawn / goal / checkpoint (đen)</p>
+        <p class="tip">Tip: giữ Shift để vẽ tự do (không snap lưới)<br>
+        Del: xóa – Ctrl+Z: undo – Phím 1..7: đổi công cụ</p>
+      </div>
+    </aside>
+
+    <!-- Canvas giữa -->
+    <main id="ed-canvas-wrap">
+      <canvas id="ed-canvas"></canvas>
+    </main>
+
+    <!-- Properties bên phải -->
+    <aside id="ed-props">
+      <h3>Thuộc tính</h3>
+      <div id="ed-props-body"><p class="hint">Chọn 1 thành phần để sửa.</p></div>
+    </aside>
+  </div>
+
+  <script src="js/render.js"></script>
+  <script src="js/format.js"></script>
+  <script src="js/editor.js"></script>
+</body>
+</html>
