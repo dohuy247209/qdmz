@@ -8,6 +8,7 @@
 
   const $ = function (id) { return document.getElementById(id); };
   const R = window.QMRender; // renderer helpers (render.js load trước)
+  const M = window.QMMotion; // cơ học dùng chung với game (motion.js)
   const canvas = $('ed-canvas');
   const ctx = canvas.getContext('2d');
 
@@ -19,8 +20,15 @@
   let hover = null;        // ô lưới đang trỏ chuột {x,y}
   let drag = null;         // phiên kéo hiện tại
   let propsDirty = false;  // đang gõ trong props -> không render lại props
+  let anim = false;        // xem trước chuyển động (path/spin) thật trong editor
+  let animT0 = 0;          // mốc thời gian khi bật anim
 
   const SNAP = 1;          // snap 1 ô
+
+  // Thời gian draw hiện tại (giây): anim bật -> chạy thật; không -> pose t=0.
+  function drawTime() { return anim ? (performance.now() - animT0) / 1000 : 0; }
+  // Ma trận world của mọi wall/saw (motion + attach) – dùng cho vẽ & hit-test.
+  function curMats() { return M.resolve(level, drawTime()); }
 
   // -------- Undo --------
   function pushUndo() {
@@ -48,6 +56,11 @@
   // -------- Tọa độ canvas -> cell --------
   let view = { scale: 24, ox: 8, oy: 8 };
 
+  // Zoom & pan: viewport là "cửa sổ" vào sandbox lớn (wheel = pan, Ctrl+wheel
+  // = zoom quanh chuột, kéo vùng trống bằng tool Chọn = pan, phím 0 = fit).
+  let zoom = 1;            // hệ số zoom so với fit (0.5..8)
+  let pan = { x: null, y: null }; // offset px đã chọn (null = căn giữa)
+
   function computeView() {
     const wrap = $('ed-canvas-wrap');
     const W = wrap.clientWidth, H = wrap.clientHeight;
@@ -58,11 +71,20 @@
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const pad = 32;
-    const scale = Math.min((W - pad * 2) / level.box.w, (H - pad * 2) / level.box.h);
+    const fit = Math.min((W - pad * 2) / level.box.w, (H - pad * 2) / level.box.h);
+    const scale = Math.max(4, fit * zoom);
+    const bw = level.box.w * scale, bh = level.box.h * scale;
+    let ox = pan.x == null ? (W - bw) / 2 : pan.x;
+    let oy = pan.y == null ? (H - bh) / 2 : pan.y;
+    // Box rộng hơn màn hình -> clamp cho phủ kín; không thì căn giữa.
+    ox = bw > W ? Math.min(0, Math.max(W - bw, ox)) : (W - bw) / 2;
+    oy = bh > H ? Math.min(0, Math.max(H - bh, oy)) : (H - bh) / 2;
+    pan.x = ox;
+    pan.y = oy;
     view = {
       scale: scale,
-      ox: Math.round((W - level.box.w * scale) / 2),
-      oy: Math.round((H - level.box.h * scale) / 2),
+      ox: Math.round(ox),
+      oy: Math.round(oy),
       W: W, H: H
     };
   }
@@ -75,25 +97,23 @@
 
   function snap(v, free) { return free ? Math.round(v * 2) / 2 : Math.round(v); }
 
-  // -------- Hit test --------
+  // -------- Hit test (theo transform world: motion + attach) --------
   function hitWall(c) {
+    const mats = curMats().walls;
     for (let i = level.walls.length - 1; i >= 0; i--) {
       const w = level.walls[i];
-      // Transform điểm về không gian local của wall (hỗ trợ rot).
-      const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
-      const dx = c.x - cx, dy = c.y - cy;
-      const a = -(w.rot || 0) * Math.PI / 180;
-      const lx = dx * Math.cos(a) - dy * Math.sin(a);
-      const ly = dx * Math.sin(a) + dy * Math.cos(a);
-      if (Math.abs(lx) <= w.w / 2 && Math.abs(ly) <= w.h / 2) return i;
+      // Nghịch đảo world -> toạ độ REST (nơi có x,y,w,h gốc của wall).
+      const l = M.apply(M.inv(mats[i]), c.x, c.y);
+      if (l.x >= w.x && l.x <= w.x + w.w && l.y >= w.y && l.y <= w.y + w.h) return i;
     }
     return -1;
   }
   function hitSaw(c) {
+    const mats = curMats().saws;
     for (let i = level.saws.length - 1; i >= 0; i--) {
       const s = level.saws[i];
-      const cx = s.x + s.size / 2, cy = s.y + s.size / 2;
-      if (Math.hypot(c.x - cx, c.y - cy) <= s.size / 2) return i;
+      const ctr = M.apply(mats[i], s.x + s.size / 2, s.y + s.size / 2);
+      if (Math.hypot(c.x - ctr.x, c.y - ctr.y) <= s.size / 2) return i;
     }
     return -1;
   }
@@ -142,11 +162,19 @@
     // Lưới mờ.
     R.drawGrid(ctx, bx, by, level.box.w, level.box.h, view.scale);
 
-    // Walls.
+    // Ma trận world tại thời điểm draw (pose t=0, hoặc anim đang chạy).
+    const mats = curMats();
+
+    // Walls (transform bởi motion/spin/attach) + overlay path/pivot.
     for (let i = 0; i < level.walls.length; i++) {
       const w = level.walls[i];
-      R.drawWallRect(ctx, w, view);
-      if (sel && sel.kind === 'wall' && sel.index === i) outline(w.x, w.y, w.w, w.h, w.rot);
+      const m = mats.walls[i];
+      const ctr = M.apply(m, w.x + w.w / 2, w.y + w.h / 2);
+      drawMotionOverlays(w, mats, i);
+      R.drawWallXf(ctx, ctr.x, ctr.y, w.w, w.h, M.angleOf(m), view);
+      if (sel && sel.kind === 'wall' && sel.index === i) {
+        outlineAt(ctr.x, ctr.y, w.w, w.h, M.angleOf(m) * 180 / Math.PI);
+      }
     }
 
     // Markers.
@@ -157,11 +185,18 @@
       drawMarkerSel(c, sel && sel.kind === 'checkpoint' && sel.index === i);
     }
 
-    // Saws (khung dây để thấy vùng nguy hiểm, không animate trong editor).
+    // Saws: tâm theo transform (path/spin/attach); overlay path/pivot;
+    // răng cưa xoay thật khi bật anim.
     for (let i = 0; i < level.saws.length; i++) {
       const s = level.saws[i];
-      const p = cellToPx(s.x + s.size / 2, s.y + s.size / 2);
-      R.drawSaw(ctx, p.x, p.y, s.size * view.scale, (s.spin >= 0 ? 1 : -1) * Math.PI / 8);
+      const m = mats.saws[i];
+      const ctr = M.apply(m, s.x + s.size / 2, s.y + s.size / 2);
+      const p = cellToPx(ctr.x, ctr.y);
+      drawMotionOverlays(s, mats, i);
+      const gear = anim
+        ? (s.spin || 90) * Math.PI / 180 * drawTime()
+        : (s.spin >= 0 ? 1 : -1) * Math.PI / 8;
+      R.drawSaw(ctx, p.x, p.y, s.size * view.scale, gear);
       if (sel && sel.kind === 'saw' && sel.index === i) {
         ctx.strokeStyle = R.COLORS.select;
         ctx.lineWidth = 2;
@@ -203,8 +238,9 @@
   let _needCompute = true;
   function computeViewIfNeed() { if (_needCompute) { computeView(); _needCompute = false; } }
 
-  function outline(x, y, w, h, rot) {
-    const p = cellToPx(x + w / 2, y + h / 2);
+  // Viền chọn quanh tâm (cx,cy) đơn vị cell + góc rot (độ).
+  function outlineAt(cx, cy, w, h, rot) {
+    const p = cellToPx(cx, cy);
     ctx.save();
     ctx.translate(p.x, p.y);
     if (rot) ctx.rotate(rot * Math.PI / 180);
@@ -212,6 +248,53 @@
     ctx.lineWidth = 2;
     ctx.strokeRect(-w * view.scale / 2 - 2, -h * view.scale / 2 - 2, w * view.scale + 4, h * view.scale + 4);
     ctx.restore();
+  }
+
+  // Overlay chuyển động của object: polyline path (xanh) trong frame của wall
+  // cha + crosshair pivot (tím) – vẽ cả khi chưa chọn để thấy cơ chế.
+  function drawMotionOverlays(obj, mats, index) {
+    const m = obj.motion || { type: 'static' };
+    const parent = (obj.attach != null && mats.walls[obj.attach])
+      ? mats.walls[obj.attach] : M.identity();
+    if (m.type === 'path' && m.points && m.points.length >= 2) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(120,170,255,0.9)';
+      ctx.fillStyle = 'rgba(120,170,255,0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      for (let i = 0; i < m.points.length; i++) {
+        const q = M.apply(parent, m.points[i][0], m.points[i][1]);
+        const px = view.ox + q.x * view.scale, py = view.oy + q.y * view.scale;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      if (m.mode === 'loop') ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Đầu mút đường đi.
+      [m.points[0], m.points[m.points.length - 1]].forEach(function (pt) {
+        const q = M.apply(parent, pt[0], pt[1]);
+        const px = view.ox + q.x * view.scale, py = view.oy + q.y * view.scale;
+        ctx.fillRect(px - 3, py - 3, 6, 6);
+      });
+      ctx.restore();
+    }
+    if (m.type === 'spin') {
+      const cx0 = obj.x + (obj.w !== undefined ? obj.w / 2 : obj.size / 2);
+      const cy0 = obj.y + (obj.h !== undefined ? obj.h / 2 : obj.size / 2);
+      const pv = m.pivot || [cx0, cy0]; // null = tâm rect
+      const q = M.apply(parent, pv[0], pv[1]);
+      const px = view.ox + q.x * view.scale, py = view.oy + q.y * view.scale;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(200,120,255,0.95)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(px - 7, py); ctx.lineTo(px + 7, py);
+      ctx.moveTo(px, py - 7); ctx.lineTo(px, py + 7);
+      ctx.stroke();
+      ctx.strokeRect(px - 3.5, py - 3.5, 7, 7);
+      ctx.restore();
+    }
   }
 
   function drawMarkerSel(m, selected) {
@@ -253,6 +336,9 @@
           mode: 'move', kind: hit.kind, index: hit.index,
           dx: c.x - obj.x, dy: c.y - obj.y
         };
+      } else {
+        // Kéo vùng trống = PAN viewport (sandbox lớn hơn màn hình).
+        drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, ox: view.ox, oy: view.oy };
       }
       renderProps();
       draw();
@@ -294,7 +380,7 @@
       // Spawn/goal là duy nhất – không cho xóa, chỉ kéo-di chuyển bằng tool Chọn.
       if (hit && hit.kind !== 'spawn' && hit.kind !== 'goal') {
         pushUndo();
-        if (hit.kind === 'wall') level.walls.splice(hit.index, 1);
+        if (hit.kind === 'wall') { level.walls.splice(hit.index, 1); remapAttach(hit.index); }
         else if (hit.kind === 'saw') level.saws.splice(hit.index, 1);
         else level.checkpoints.splice(hit.index, 1);
         if (sel && sel.kind === hit.kind && sel.index === hit.index) sel = null;
@@ -323,6 +409,10 @@
       obj.x = snap(c.x - drag.dx, free);
       obj.y = snap(c.y - drag.dy, free);
       if (!propsDirty) renderProps();
+    } else if (drag.mode === 'pan') {
+      pan.x = drag.ox + (e.clientX - drag.sx);
+      pan.y = drag.oy + (e.clientY - drag.sy);
+      _needCompute = true; // computeView sẽ clamp pan theo kích thước box
     }
     draw();
   });
@@ -332,7 +422,8 @@
     if (drag.mode === 'drawWall') {
       const r = normRect(drag.from, drag.to || drag.from);
       if (r.w >= 0.5 && r.h >= 0.5) {
-        r.motion = { type: 'static', distance: 0, speed: 2, phase: 0 };
+        r.motion = QMFormat.staticMotion();
+        r.attach = null;
         level.walls.push(r);
         sel = { kind: 'wall', index: level.walls.length - 1 };
         msg('Thêm wall ' + r.w + '×' + r.h + ' @(' + r.x + ',' + r.y + ')');
@@ -345,7 +436,8 @@
       level.saws.push({
         x: drag.from.x - size / 2, y: drag.from.y - size / 2,
         size: Math.round(size * 4) / 4, spin: 90,
-        motion: { type: 'static', distance: 0, speed: 2, phase: 0 }
+        motion: QMFormat.staticMotion(),
+        attach: null
       });
       sel = { kind: 'saw', index: level.saws.length - 1 };
       msg('Thêm saw size ' + Math.round(size * 4) / 4);
@@ -375,7 +467,7 @@
         numRow('X', 'x', w.x) + numRow('Y', 'y', w.y) +
         numRow('Rộng', 'w', w.w, 0.5) + numRow('Cao', 'h', w.h, 0.5) +
         numRow('Xoay (độ)', 'rot', w.rot || 0, 15) +
-        motionHtml(w.motion);
+        motionHtml(w, 'wall', sel.index);
     } else if (sel.kind === 'saw') {
       const s = level.saws[sel.index];
       if (!s) { sel = null; return renderProps(); }
@@ -384,7 +476,7 @@
         numRow('X', 'x', s.x) + numRow('Y', 'y', s.y) +
         numRow('Kích cỡ', 'size', s.size, 0.25) +
         numRow('Tốc độ xoay (độ/giây)', 'spin', s.spin, 10) +
-        motionHtml(s.motion);
+        motionHtml(s, 'saw', sel.index);
     } else if (sel.kind === 'checkpoint') {
       const c = level.checkpoints[sel.index];
       if (!c) { sel = null; return renderProps(); }
@@ -408,16 +500,91 @@
       '<input type="number" data-k="' + key + '" value="' + val + '" step="' + (step || 1) + '"></label>';
   }
 
-  function motionHtml(m) {
-    const types = ['static', 'horizontal', 'vertical', 'circle'];
+  // UI motion v2: static | path (tốc độ ô/giây, không đổi, đảo ngay) |
+  // spin (pivot + tốc độ độ/giây) + attach (gắn frame wall cha).
+  function motionHtml(obj, kind, index) {
+    const m = obj.motion;
+    let html = '<div class="grp">CHUYỂN ĐỘNG</div>';
+    const types = [['static', 'Không (static)'], ['path', 'Path (đi đường)'], ['spin', 'Spin (quay)']];
     let opts = '';
     types.forEach(function (t) {
-      opts += '<option value="' + t + '"' + (m.type === t ? ' selected' : '') + '>' + t + '</option>';
+      opts += '<option value="' + t[0] + '"' + (m.type === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
     });
-    return '<label class="prow">Chuyển động<select data-k="motion.type">' + opts + '</select></label>' +
-      '<label class="prow">Quãng đường (ô)<input type="number" data-k="motion.distance" step="0.5" value="' + m.distance + '"></label>' +
-      '<label class="prow">Tốc độ (chu kỳ/giây)<input type="number" data-k="motion.speed" step="0.1" value="' + m.speed + '"></label>' +
-      '<label class="prow">Pha (0..1)<input type="number" data-k="motion.phase" step="0.1" value="' + m.phase + '"></label>';
+    html += '<label class="prow">Loại<select data-k="motion.type">' + opts + '</select></label>';
+    if (m.type === 'path') {
+      const pts = (m.points || []).map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+      const modes = [['pingpong', 'Đảo ngay 2 đầu'], ['loop', 'Khép vòng']];
+      let mopts = '';
+      modes.forEach(function (t) {
+        mopts += '<option value="' + t[0] + '"' + (m.mode === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
+      });
+      html += '<label class="prow">Đường (x,y ...)<input type="text" data-k="motion.points" value="' + pts + '"></label>' +
+        '<label class="prow">Chế độ<select data-k="motion.mode">' + mopts + '</select></label>' +
+        '<label class="prow">Tốc độ (ô/giây)<input type="number" data-k="motion.speed" step="0.5" value="' + m.speed + '"></label>' +
+        '<label class="prow">Pha (0..1)<input type="number" data-k="motion.phase" step="0.05" value="' + m.phase + '"></label>';
+    } else if (m.type === 'spin') {
+      html += '<label class="prow">Tốc độ (độ/giây)<input type="number" data-k="motion.speed" step="15" value="' + m.speed + '"></label>' +
+        '<label class="prow">Pha ban đầu (độ)<input type="number" data-k="motion.phase" step="15" value="' + m.phase + '"></label>' +
+        '<label class="prow">Pivot X<input type="number" data-k="motion.pivotX" step="0.5" placeholder="tâm rect" value="' + (m.pivot ? m.pivot[0] : '') + '"></label>' +
+        '<label class="prow">Pivot Y<input type="number" data-k="motion.pivotY" step="0.5" placeholder="tâm rect" value="' + (m.pivot ? m.pivot[1] : '') + '"></label>';
+    }
+    // Attach: chọn wall cha. Wall chỉ được gắn wall index đứng TRƯỚC (chống vòng).
+    let aopts = '<option value="">— Không —</option>';
+    for (let i = 0; i < level.walls.length; i++) {
+      if (kind === 'wall' && i >= index) continue;
+      const w = level.walls[i];
+      aopts += '<option value="' + i + '"' + (obj.attach === i ? ' selected' : '') +
+        '>Wall ' + i + ' (' + w.w + '×' + w.h + ')</option>';
+    }
+    html += '<label class="prow">Gắn vào (attach)<select data-k="attach">' + aopts + '</select></label>';
+    html += '<p class="hint">Path/spin: tốc độ KHÔNG đổi, đổi hướng tức thì (không gia tốc). ' +
+      'Attach: saw/path đi theo frame wall cha (vd saw chạy trên cạnh wall đang quay). ' +
+      'Pivot để trống = tâm rect.</p>';
+    return html;
+  }
+
+  // Đổi loại motion, giữ/giá trị tối thiểu hợp lý để level luôn chạy được.
+  function changeMotionType(obj, type) {
+    pushUndo();
+    const m = obj.motion;
+    const cx = obj.x + (obj.w !== undefined ? obj.w / 2 : obj.size / 2);
+    const cy = obj.y + (obj.h !== undefined ? obj.h / 2 : obj.size / 2);
+    if (type === 'path' && (!m.points || m.points.length < 2)) {
+      m.points = [[cx - 2, cy], [cx + 2, cy]];
+      if (!m.speed) m.speed = 4;
+      if (!m.mode) m.mode = 'pingpong';
+    }
+    m.type = type;
+  }
+
+  // Parse textarea "x,y x,y ..." -> points (bỏ qua khi đang gõ dở).
+  function applyPoints(obj, text) {
+    const toks = String(text).split(/[\s;]+/).filter(Boolean);
+    const pts = [];
+    for (let i = 0; i < toks.length; i++) {
+      const parts = toks[i].split(',');
+      if (parts.length !== 2) return;
+      const x = parseFloat(parts[0]), y = parseFloat(parts[1]);
+      if (isNaN(x) || isNaN(y)) return;
+      pts.push([x, y]);
+    }
+    if (pts.length < 2) return;
+    obj.motion.points = pts;
+  }
+
+  // Pivot X/Y rỗng -> lấy tâm rect (null = tâm trong format).
+  function applyPivot(obj, k, val) {
+    const m = obj.motion;
+    let px = m.pivot ? m.pivot[0] : '';
+    let py = m.pivot ? m.pivot[1] : '';
+    if (k === 'motion.pivotX') px = val; else py = val;
+    if (px === '' && py === '') { m.pivot = null; return; }
+    const cx = obj.x + (obj.w !== undefined ? obj.w / 2 : obj.size / 2);
+    const cy = obj.y + (obj.h !== undefined ? obj.h / 2 : obj.size / 2);
+    const x = px === '' ? cx : parseFloat(px);
+    const y = py === '' ? cy : parseFloat(py);
+    if (isNaN(x) || isNaN(y)) { m.pivot = null; return; }
+    m.pivot = [x, y];
   }
 
   function bindProps(obj) {
@@ -431,7 +598,11 @@
       });
       inp.addEventListener('input', function () {
         const k = inp.dataset.k;
-        if (k === 'motion.type') obj.motion.type = inp.value;
+        if (k === 'motion.type') { changeMotionType(obj, inp.value); renderProps(); }
+        else if (k === 'motion.mode') obj.motion.mode = inp.value;
+        else if (k === 'motion.points') applyPoints(obj, inp.value);
+        else if (k === 'motion.pivotX' || k === 'motion.pivotY') applyPivot(obj, k, inp.value);
+        else if (k === 'attach') obj.attach = inp.value === '' ? null : parseInt(inp.value, 10);
         else if (k.indexOf('motion.') === 0) obj.motion[k.slice(7)] = parseFloat(inp.value) || 0;
         else {
           let v = parseFloat(inp.value);
@@ -446,10 +617,28 @@
     });
   }
 
+  // Ký hiệu motion/attach trong danh sách bên trái.
+  function motionGlyph(o) {
+    let g = '';
+    if (o.motion && o.motion.type === 'path') g += ' →';
+    if (o.motion && o.motion.type === 'spin') g += ' ⟳';
+    if (o.attach != null) g += ' ⧉';
+    return g;
+  }
+
+  // Xóa wall -> giữ attach của wall/saw khác không trỏ nhầm sau khi dồn index.
+  function remapAttach(deletedIndex) {
+    level.walls.concat(level.saws).forEach(function (o) {
+      if (o.attach == null) return;
+      if (o.attach === deletedIndex) o.attach = null;
+      else if (o.attach > deletedIndex) o.attach--;
+    });
+  }
+
   function deleteSelection() {
     if (!sel) return;
     pushUndo();
-    if (sel.kind === 'wall') level.walls.splice(sel.index, 1);
+    if (sel.kind === 'wall') { level.walls.splice(sel.index, 1); remapAttach(sel.index); }
     else if (sel.kind === 'saw') level.saws.splice(sel.index, 1);
     else if (sel.kind === 'checkpoint') level.checkpoints.splice(sel.index, 1);
     else if (sel.kind === 'spawn') level.spawn = { x: 1, y: 1 };
@@ -475,10 +664,10 @@
       ul.appendChild(li);
     }
     level.walls.forEach(function (w, i) {
-      item('Wall ' + w.w + '×' + w.h + (w.rot ? ' ↻' + w.rot + '°' : ''), 'wall', i);
+      item('Wall ' + w.w + '×' + w.h + (w.rot ? ' ↻' + w.rot + '°' : '') + motionGlyph(w), 'wall', i);
     });
     level.saws.forEach(function (s, i) {
-      item('Saw ' + s.size + (s.motion.type !== 'static' ? ' ⇄' : ''), 'saw', i);
+      item('Saw ' + s.size + motionGlyph(s), 'saw', i);
     });
     level.checkpoints.forEach(function (c, i) {
       item('Checkpoint @' + c.x + ',' + c.y, 'checkpoint', i);
@@ -508,8 +697,8 @@
   $('ed-name').addEventListener('input', function () { level.name = this.value; });
   function applyBox() {
     pushUndo();
-    level.box.w = Math.max(8, Math.min(300, parseInt($('ed-bw').value, 10) || 36));
-    level.box.h = Math.max(6, Math.min(200, parseInt($('ed-bh').value, 10) || 20));
+    level.box.w = Math.max(8, Math.min(600, parseInt($('ed-bw').value, 10) || 64));
+    level.box.h = Math.max(6, Math.min(400, parseInt($('ed-bh').value, 10) || 36));
     _needCompute = true;
     draw();
   }
@@ -578,7 +767,57 @@
       Digit4: 'spawn', Digit5: 'goal', Digit6: 'checkpoint', Digit7: 'erase'
     };
     if (map[e.code]) setTool(map[e.code]);
+    if (e.code === 'Digit0') { resetView(); msg('Đã fit toàn bộ box'); }
   });
+
+  // -------- Pan / zoom viewport (sandbox lớn hơn màn hình) --------
+  function resetView() {
+    zoom = 1;
+    pan = { x: null, y: null };
+    _needCompute = true;
+    draw();
+  }
+
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    computeViewIfNeed();
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom quanh con trỏ chuột (giữ ô dưới chuột tại chỗ).
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const cell = pxToCell(mx, my);
+      zoom = Math.max(0.5, Math.min(8, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      _needCompute = true;
+      computeViewIfNeed();
+      pan.x = mx - cell.x * view.scale;
+      pan.y = my - cell.y * view.scale;
+      _needCompute = true;
+      computeViewIfNeed();
+    } else {
+      // Wheel = pan dọc, Shift+wheel = pan ngang.
+      pan.x = view.ox - (e.shiftKey ? e.deltaY : e.deltaX);
+      pan.y = view.oy - (e.shiftKey ? 0 : e.deltaY);
+      _needCompute = true;
+      computeViewIfNeed();
+    }
+    draw();
+  }, { passive: false });
+
+  // -------- Xem trước chuyển động (checkbox trên topbar) --------
+  function tickAnim() {
+    if (!anim) return;
+    draw();
+    requestAnimationFrame(tickAnim);
+  }
+  const animEl = $('ed-anim');
+  if (animEl) {
+    animEl.addEventListener('change', function () {
+      anim = animEl.checked;
+      animT0 = performance.now();
+      if (anim) { tickAnim(); msg('Đang xem trước chuyển động'); }
+      else { draw(); msg('Đã dừng xem trước'); }
+    });
+  }
 
   window.addEventListener('resize', function () { _needCompute = true; draw(); });
 

@@ -1,36 +1,31 @@
 /*
  * Quad Maze clone – Core game engine (canvas 2D).
- * - Vật lý gravity thấp, đa nhảy (multijump) khi chạm/tiện gần wall <= 0.5 ô.
- * - Saw trúng -> chết -> respawn tại checkpoint gần nhất.
- * - Timer đếm tiếp tục xuyên suốt (phong cách speedrun).
+ * - CHỈ square (player) chịu trọng lực. Wall/saw là kinematic (xem js/motion.js).
+ * - Double jump mặc định: 2 nhảy liên tiếp; wall trong tầm chạm -> nhảy
+ *   "miễn phí" (wall-jump), chạm sàn -> refresh.
+ * - Motion (path/spin): tốc độ KHÔNG đổi, đổi hướng TỨC THÌ – không gia tốc.
+ * - Camera bám mượt (exponential) quanh player, clamp trong sandbox.
+ * - Saw trúng -> chết -> respawn checkpoint gần nhất. Timer speedrun.
  */
 (function (global) {
   'use strict';
   const R = global.QMRender;
+  const M = global.QMMotion;
 
   const PHYS = {
-    speed: 10,       // tốc độ ngang (cell/giây)
-    gravity: 60,     // trọng lực (cell/giây^2) – thấp để có cảm giác lơ lửng
+    speed: 10,       // tốc độ ngang của square (cell/giây)
+    gravity: 60,     // trọng lực (cell/giây^2) – CHỈ áp dụng cho square
     jumpV: 21,       // vận tốc nhảy (cell/giây) -> độ cao ~3.7 ô
     maxFall: 42,
-    nearDist: 0.5,   // bán kính "gần wall" cho multijump = 1/2 bề rộng square
+    nearDist: 0.5,   // nửa bề rộng square (0.5 ô)
+    reach: 1.0,      // tầm chạm wall cho nhảy miễn phí = nearDist + half size
+    airJumps: 2,     // SỐ NHẢY LIÊN TIẾP MẶC ĐỊNH (từ sàn + 1 air jump)
     deathTime: 0.35, // thời gian chết trước khi respawn
-    spawnGrace: 0.3  // miễn nhiễm sau khi respawn
+    spawnGrace: 0.3, // miễn nhiễm sau khi respawn
+    camTau: 0.12     // hằng số thời gian bám camera (giây) – càng nhỏ càng bám sát
   };
 
   const STEP = 1 / 120; // fixed timestep
-
-  function motionOffset(m, t) {
-    if (!m || m.type === 'static' || !m.distance) return { x: 0, y: 0 };
-    const w = Math.PI * 2 * (m.speed || 1); // speed = chu kỳ/giây
-    const ph = Math.PI * 2 * (m.phase || 0); // phase = chu kỳ (0..1)
-    if (m.type === 'horizontal') return { x: m.distance * Math.sin(w * t + ph), y: 0 };
-    if (m.type === 'vertical') return { x: 0, y: m.distance * Math.sin(w * t + ph) };
-    if (m.type === 'circle') {
-      return { x: m.distance * Math.cos(w * t + ph), y: m.distance * Math.sin(w * t + ph) };
-    }
-    return { x: 0, y: 0 };
-  }
 
   function overlap(a, b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -66,7 +61,17 @@
     this.raf = 0;
     this.input = { left: false, right: false };
     this._jumpQueued = false;
-    this.player = { x: 0, y: 0, w: 1, h: 1, vx: 0, vy: 0, grounded: false, dead: false, deadT: 0, grace: 0 };
+    // Camera theo player (mượt); snap theo spawn trong load()/restart().
+    this.cam = { x: 0, y: 0 };
+    // Transform wall/saw (QMMotion) tại thời điểm hiện tại / bước trước.
+    this._wm = null;
+    this._wmPrev = null;
+    this.player = {
+      x: 0, y: 0, w: 1, h: 1, vx: 0, vy: 0, grounded: false,
+      dead: false, deadT: 0, grace: 0,
+      airJumps: PHYS.airJumps, // số air jump còn lại
+      groundIdx: null          // index wall đang đứng (để "mang theo" khi nó chuyển động)
+    };
     this.respawn = { x: 0, y: 0 };
     this.activeCheckpoint = -1;
     this._onKey = this._onKey.bind(this);
@@ -85,6 +90,10 @@
     this.activeCheckpoint = -1;
     this.respawn = { x: level.spawn.x, y: level.spawn.y };
     this._resetPlayer(true);
+    this._wm = M.resolve(level, 0);
+    this._wmPrev = this._wm;
+    this.cam.x = level.spawn.x + 0.5; // snap, không bám từ gốc tọa độ
+    this.cam.y = level.spawn.y + 0.5;
     this.state = 'playing'; // luôn bắt đầu chơi khi load level mới (kể cả sau win/pause)
     this.acc = 0;
     if (!this.raf) { this.lastTs = performance.now(); this.raf = requestAnimationFrame(this._loop); }
@@ -100,6 +109,10 @@
     p.deadT = 0;
     p.grace = PHYS.spawnGrace;
     if (hard) p.grounded = false;
+    p.airJumps = PHYS.airJumps; // nhảy đôi làm mới khi chạm sàn
+    p.groundIdx = null;
+    this.cam.x = p.x + p.w / 2; // respawn -> camera snap ngay (không bám dần)
+    this.cam.y = p.y + p.h / 2;
   };
 
   Game.prototype.restart = function () {
@@ -109,6 +122,8 @@
     this.activeCheckpoint = -1;
     this.respawn = { x: this.level.spawn.x, y: this.level.spawn.y };
     this._resetPlayer(true);
+    this._wm = M.resolve(this.level, 0);
+    this._wmPrev = this._wm;
     this.state = 'playing';
   };
 
@@ -211,25 +226,27 @@
     return Math.hypot(qx, qy);
   }
 
-  // Danh sách shape rắn (OBB) = wall (kể cả di chuyển/xoay) + 4 tường sandbox vô hạn.
+  // Danh sách shape rắn (OBB, rot = radian) = wall ĐÃ transform bằng QMMotion
+  // (rotate/spin/path/attach) + 4 tường sandbox vô hạn.
+  // Sandbox LUÔN đứng trước (index 0..3), wall level từ index 4 (groundIdx).
   Game.prototype._solidRects = function () {
     const lv = this.level;
-    const t = this.time;
     const rects = [];
     const B = 60; // bề dày tường sandbox
     rects.push({ cx: lv.box.w / 2, cy: -B / 2, hw: lv.box.w / 2 + B, hh: B / 2, rot: 0 });           // trên
     rects.push({ cx: lv.box.w / 2, cy: lv.box.h + B / 2, hw: lv.box.w / 2 + B, hh: B / 2, rot: 0 });  // dưới
     rects.push({ cx: -B / 2, cy: lv.box.h / 2, hw: B / 2, hh: lv.box.h / 2, rot: 0 });                // trái
     rects.push({ cx: lv.box.w + B / 2, cy: lv.box.h / 2, hw: B / 2, hh: lv.box.h / 2, rot: 0 });      // phải
+    const mats = (this._wm || M.resolve(lv, this.time)).walls;
     for (let i = 0; i < lv.walls.length; i++) {
       const w = lv.walls[i];
-      const off = motionOffset(w.motion, t);
+      const c = M.apply(mats[i], w.x + w.w / 2, w.y + w.h / 2);
       rects.push({
-        cx: w.x + off.x + w.w / 2,
-        cy: w.y + off.y + w.h / 2,
+        cx: c.x,
+        cy: c.y,
         hw: w.w / 2,
         hh: w.h / 2,
-        rot: ((w.rot || 0) * Math.PI) / 180
+        rot: M.angleOf(mats[i])
       });
     }
     return rects;
@@ -247,6 +264,10 @@
     this.time += dt;
     this.hazardT += dt;
 
+    // Transform wall/saw MỚI tại t=time (đổi hướng tức thì – không gia tốc).
+    this._wmPrev = this._wm || M.resolve(lv, this.time - dt);
+    this._wm = M.resolve(lv, this.time);
+
     if (p.dead) {
       p.deadT -= dt;
       if (p.deadT <= 0) this._resetPlayer(false);
@@ -254,24 +275,48 @@
     }
     if (p.grace > 0) p.grace -= dt;
 
-    // Điều khiển ngang.
+    // "Mang theo" nền: đang đứng trên wall có motion -> áp transform delta của
+    // wall (bước trước -> bây giờ) cho player, kể cả spin quanh pivot.
+    if (p.groundIdx != null && this._wmPrev) {
+      const gi = p.groundIdx;
+      const mw = this._wm.walls, mp = this._wmPrev.walls;
+      if (mw[gi] && mp[gi]) {
+        const pcx = p.x + p.w / 2, pcy = p.y + p.h / 2;
+        const rel = M.apply(M.inv(mp[gi]), pcx, pcy);
+        const nw = M.apply(mw[gi], rel.x, rel.y);
+        p.x += nw.x - pcx;
+        p.y += nw.y - pcy;
+      }
+    }
+    p.groundIdx = null;
+
+    const solids = this._solidRects();
+
+    // Điều khiển ngang: đảo tức thì, KHÔNG gia tốc.
     const want = (this.input.right ? 1 : 0) - (this.input.left ? 1 : 0);
     p.vx = want * PHYS.speed;
 
-    // Nhảy: chỉ khi dính wall / gần wall (<=1/2 ô) hoặc đang đứng trên sàn.
+    // Nhảy DOUBLE (mặc định 2 lần liên tiếp):
+    // - trên SÀN hoặc wall trong tầm chạm -> nhảy "miễn phí", còn airJumps = 1.
+    // - đang bay, còn airJumps > 0 -> tiêu 1 lần (air jump); hết -> không nhảy.
+    // - chạm sàn -> refresh lại đủ 2.
+    const near = this._nearWall(p, solids);
     if (this._jumpQueued) {
       this._jumpQueued = false;
-      if (this._canJump(p)) {
+      if (p.grounded || near) {
         p.vy = -PHYS.jumpV;
         p.grounded = false;
+        p.airJumps = PHYS.airJumps - 1; // nhảy đầu, giữ 1 air jump
+      } else if (p.airJumps > 0) {
+        p.vy = -PHYS.jumpV;
+        p.airJumps--;
       }
     }
+    if (p.grounded) p.airJumps = PHYS.airJumps;
 
-    // Gravity (thấp).
+    // Gravity – CHỈ square (wall/saw là kinematic, không chịu trọng lực).
     p.vy += PHYS.gravity * dt;
     if (p.vy > PHYS.maxFall) p.vy = PHYS.maxFall;
-
-    const solids = this._solidRects();
 
     // Di chuyển trục X rồi tách bằng SAT (hỗ trợ wall xoay).
     p.x += p.vx * dt;
@@ -295,21 +340,22 @@
       if (mtv) {
         p.y += mtv.y;
         po.cy += mtv.y;
-        if (mtv.y < -0.0001 && p.vy > 0) p.grounded = true; // đáy chạm sàn (y+ là xuống)
+        if (mtv.y < -0.0001 && p.vy > 0) {
+          p.grounded = true; // đáy chạm sàn (y+ là xuống)
+          p.groundIdx = i >= 4 ? i - 4 : null; // wall level -> giữ để "mang theo"
+        }
         if (p.vx * mtv.x + p.vy * mtv.y < 0) p.vy = 0;
       }
     }
 
-    // Kiểm tra saw (chết).
+    // Kiểm tra saw (chết) – tâm saw theo transform (path/spin/attach).
     if (p.grace <= 0) {
       for (let i = 0; i < lv.saws.length; i++) {
         const s = lv.saws[i];
-        const off = motionOffset(s.motion, this.time);
-        const cx = s.x + off.x + s.size / 2;
-        const cy = s.y + off.y + s.size / 2;
+        const c = M.apply(this._wm.saws[i], s.x + s.size / 2, s.y + s.size / 2);
         // Bán kính chạm = nửa đường chéo vuông (8 khía gear = 2 vuông chồng nhau).
         const rr = s.size * Math.SQRT1_2 * 0.92;
-        if (circleHitsRect(cx, cy, rr, p)) { this._die(); return; }
+        if (circleHitsRect(c.x, c.y, rr, p)) { this._die(); return; }
       }
     }
 
@@ -332,18 +378,29 @@
       this.state = 'won';
       if (this.opts.onWin) this.opts.onWin(this.time);
     }
+
+    // Camera bám MƯỢT quanh player (exponential easing, không nhảy thô).
+    const k = 1 - Math.exp(-dt / PHYS.camTau);
+    this.cam.x += (p.x + p.w / 2 - this.cam.x) * k;
+    this.cam.y += (p.y + p.h / 2 - this.cam.y) * k;
   };
 
-  Game.prototype._canJump = function (p) {
-    if (p.grounded) return true;
-    const solids = this._solidRects();
-    // Tâm player tới wall <= nearDist + half-size = 0.5 + 0.5 = 1.0 ô.
+  // Tầm chạm wall: tâm player tới OBB tường <= 1.0 ô (nearDist + half size).
+  Game.prototype._nearWall = function (p, solids) {
+    if (!solids) solids = this._solidRects();
     const reach = PHYS.nearDist + Math.max(p.w, p.h) / 2;
     const cx = p.x + p.w / 2, cy = p.y + p.h / 2;
     for (let i = 0; i < solids.length; i++) {
       if (pointObbGap(cx, cy, solids[i]) <= reach) return true;
     }
     return false;
+  };
+
+  // Có được nhảy không: trên SÀN || còn air jump (double jump) || wall gần.
+  Game.prototype._canJump = function (p) {
+    p = p || this.player;
+    if (p.grounded || p.airJumps > 0) return true;
+    return this._nearWall(p);
   };
 
   Game.prototype._die = function () {
@@ -378,23 +435,34 @@
     ctx.fillRect(0, 0, W, H);
     if (!lv) return;
 
-    // Fit toàn bộ box vào màn hình (letterbox).
+    // Scale: sandbox nhỏ -> fit; sandbox lớn -> thấy ~34x22 ô, camera pan.
     const pad = 8;
     const hudH = Math.max(44, H * 0.075);
-    const vt = R.viewTransform(W - 2 * pad, H - hudH - pad, lv.box.w, lv.box.h);
-    vt.ox += pad;
-    vt.oy += hudH;
+    const vw = W - 2 * pad;
+    const vh = H - hudH - pad;
+    const scale = Math.min(vw / Math.min(lv.box.w, 34), vh / Math.min(lv.box.h, 22));
+    // Camera theo player (đã bám mượt trong _step), clamp không nhìn ra ngoài.
+    let cx = this.cam.x, cy = this.cam.y;
+    if (lv.box.w * scale <= vw) cx = lv.box.w / 2;
+    else cx = Math.min(lv.box.w - vw / (2 * scale), Math.max(vw / (2 * scale), cx));
+    if (lv.box.h * scale <= vh) cy = lv.box.h / 2;
+    else cy = Math.min(lv.box.h - vh / (2 * scale), Math.max(vh / (2 * scale), cy));
+    this.cam.x = cx;
+    this.cam.y = cy;
+    const vt = { scale: scale, ox: pad + vw / 2 - cx * scale, oy: hudH + vh / 2 - cy * scale };
     this._vt = vt;
     const boxPx = { x: vt.ox, y: vt.oy, w: lv.box.w * vt.scale, h: lv.box.h * vt.scale };
 
     // Nền box: sọc đỏ chéo xen kẽ.
     R.drawStripes(ctx, boxPx.x, boxPx.y, boxPx.w, boxPx.h, vt.scale);
 
-    // Walls trắng (trên nền đỏ).
+    // Walls trắng (trên nền đỏ) – transform bởi QMMotion (rotate/spin/path/attach).
+    const mats = this._wm || M.resolve(lv, this.time);
     for (let i = 0; i < lv.walls.length; i++) {
       const w = lv.walls[i];
-      const off = motionOffset(w.motion, this.time);
-      R.drawWallRect(ctx, { x: w.x + off.x, y: w.y + off.y, w: w.w, h: w.h, rot: w.rot || 0 }, vt);
+      const m = mats.walls[i];
+      const c = M.apply(m, w.x + w.w / 2, w.y + w.h / 2);
+      R.drawWallXf(ctx, c.x, c.y, w.w, w.h, M.angleOf(m), vt);
     }
 
     // Spawn / goal / checkpoints: khối vuông đen cùng cỡ player.
@@ -416,14 +484,15 @@
       }
     }
 
-    // Saws: gear đen 8 khía (2 vuông chồng nhau), luôn xoay.
+    // Saws: gear đen 8 khía (2 vuông chồng nhau), luôn xoay (visual).
+    // Tâm theo transform: path/spin/attach (saw gắn theo wall cha).
     for (let i = 0; i < lv.saws.length; i++) {
       const s = lv.saws[i];
-      const off = motionOffset(s.motion, this.time);
-      const cx = vt.ox + (s.x + off.x + s.size / 2) * vt.scale;
-      const cy = vt.oy + (s.y + off.y + s.size / 2) * vt.scale;
+      const c = M.apply(mats.saws[i], s.x + s.size / 2, s.y + s.size / 2);
+      const sx = vt.ox + c.x * vt.scale;
+      const sy = vt.oy + c.y * vt.scale;
       const angle = (s.spin || 90) * Math.PI / 180 * this.hazardT;
-      R.drawSaw(ctx, cx, cy, s.size * vt.scale, angle);
+      R.drawSaw(ctx, sx, sy, s.size * vt.scale, angle);
     }
 
     // Player.
@@ -462,5 +531,5 @@
   };
 
   global.QuadGame = Game;
-  global.QMPhysics = { motionOffset: motionOffset, PHYS: PHYS };
+  global.QMPhysics = { PHYS: PHYS, STEP: STEP };
 })(window);

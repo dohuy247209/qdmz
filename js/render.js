@@ -56,12 +56,22 @@
   function drawWallRect(ctx, r, vt) {
     const cx = vt.ox + (r.x + r.w / 2) * vt.scale;
     const cy = vt.oy + (r.y + r.h / 2) * vt.scale;
+    drawWallXf(ctx, cx, cy, r.w, r.h, (r.rot || 0) * Math.PI / 180, vt);
+  }
+
+  /**
+   * Vẽ wall theo transform WORLD: tâm (cx,cy) đơn vị cell + góc (radian).
+   * Dùng cho wall có motion/attach (game) và pose t=0 (editor).
+   */
+  function drawWallXf(ctx, cx, cy, w, h, angleRad, vt) {
+    const px = vt.ox + cx * vt.scale;
+    const py = vt.oy + cy * vt.scale;
     ctx.save();
-    ctx.translate(cx, cy);
-    if (r.rot) ctx.rotate((r.rot * Math.PI) / 180);
+    ctx.translate(px, py);
+    if (angleRad) ctx.rotate(angleRad);
     ctx.fillStyle = COLORS.wall;
-    ctx.fillRect(-r.w * vt.scale / 2, -r.h * vt.scale / 2,
-      Math.max(1, r.w * vt.scale), Math.max(1, r.h * vt.scale));
+    ctx.fillRect(-w * vt.scale / 2, -h * vt.scale / 2,
+      Math.max(1, w * vt.scale), Math.max(1, h * vt.scale));
     ctx.restore();
   }
 
@@ -123,6 +133,7 @@
     viewTransform: viewTransform,
     drawStripes: drawStripes,
     drawWallRect: drawWallRect,
+    drawWallXf: drawWallXf,
     drawSaw: drawSaw,
     drawMarker: drawMarker,
     drawLabel: drawLabel,

@@ -15,8 +15,9 @@
     <button id="ed-undo" title="Ctrl+Z">Undo</button>
     <span class="sep"></span>
     <label>Tên: <input id="ed-name" type="text" maxlength="40"></label>
-    <label>Box: <input id="ed-bw" type="number" min="8" max="300" class="narrow"> ×
-      <input id="ed-bh" type="number" min="6" max="200" class="narrow"></label>
+    <label>Box: <input id="ed-bw" type="number" min="8" max="600" class="narrow"> ×
+      <input id="ed-bh" type="number" min="6" max="400" class="narrow"></label>
+    <label class="anim"><input type="checkbox" id="ed-anim"> ▶ Xem chuyển động</label>
     <span class="sep"></span>
     <button id="ed-test" class="accent">▶ Test</button>
     <button id="ed-export">Export JSON</button>
@@ -44,8 +45,9 @@
       <div class="legend">
         <p><span class="sw white"></span> Wall (trắng)</p>
         <p><span class="sw black"></span> Saw / spawn / goal / checkpoint (đen)</p>
-        <p class="tip">Tip: giữ Shift để vẽ tự do (không snap lưới)<br>
-        Del: xóa – Ctrl+Z: undo – Phím 1..7: đổi công cụ</p>
+        <p class="tip">Tip: Shift = vẽ tự do – Del xóa – Ctrl+Z undo – phím 1..7 đổi công cụ<br>
+        0 = fit – kéo vùng trống/wheel = pan – Ctrl+wheel = zoom<br>
+        Chọn wall/saw để sửa chuyển động: Path (tốc độ ô/giây, không đổi) / Spin (độ/giây quanh pivot) / Attach (gắn vào wall cha)</p>
       </div>
     </aside>
 
@@ -62,6 +64,7 @@
   </div>
 
   <script src="js/render.js"></script>
+  <script src="js/motion.js"></script>
   <script src="js/format.js"></script>
   <script src="js/editor.js"></script>
 </body>

@@ -8,8 +8,11 @@
 
   const LEVEL_FORMAT = 'quadmaze-level';
   const PACK_FORMAT = 'quadmaze-pack';
-  const VERSION = 1;
-  const MOTION_TYPES = ['static', 'horizontal', 'vertical', 'circle'];
+  const VERSION = 2;
+  // Motion chuẩn hóa (v2): static | path (đường polyline, tốc độ không đổi) |
+  // spin (quay quanh pivot, vận tốc góc không đổi).
+  const MOTION_TYPES = ['static', 'path', 'spin'];
+  const PATH_MODES = ['pingpong', 'loop'];
 
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
 
@@ -18,24 +21,141 @@
     return Math.min(hi, Math.max(lo, v));
   }
 
-  function normalizeMotion(raw, errors, path) {
-    const def = { type: 'static', distance: 0, speed: 2, phase: 0 };
-    if (raw == null) return def;
+  // Motion "nghỉ" – không di chuyển.
+  function staticMotion() {
+    return { type: 'static', points: null, mode: 'pingpong', speed: 0, phase: 0, pivot: null };
+  }
+
+  function isPair(v) {
+    return Array.isArray(v) && v.length >= 2 && isNum(v[0]) && isNum(v[1]);
+  }
+
+  // Tạo bộ points dạng vòng tròn N đoạn (chuyển đổi legacy 'circle' -> path loop).
+  function circlePoints(cx, cy, r, n) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const a = (Math.PI * 2 * i) / n;
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    return pts;
+  }
+
+  /**
+   * Chuẩn hóa motion về dạng v2. (cx,cy) = tâm rest của object – cần cho
+   * các type legacy v1 (horizontal/vertical/circle) tự chuyển thành path.
+   * Tốc độ path: cell/giây; spin: độ/giây; KHÔNG gia tốc (đổi hướng tức thì).
+   */
+  function normalizeMotion(raw, errors, path, cx, cy) {
+    if (raw == null) return staticMotion();
     if (typeof raw !== 'object') {
       errors.push(path + '.motion phải là object');
-      return def;
+      return staticMotion();
     }
     let type = typeof raw.type === 'string' ? raw.type.toLowerCase() : 'static';
+
+    // ---- Legacy v1 -> v2 ----
+    if (type === 'horizontal' || type === 'vertical') {
+      const d = clampNum(raw.distance, 0, 200, 0);
+      const f = clampNum(raw.speed, 0, 50, 1);
+      const p = isNum(raw.phase) ? raw.phase : 0;
+      if (d <= 0 || !isNum(cx)) return staticMotion();
+      // sin(2pi(f t+p)) có chu kỳ 1/f, quãng 2d mỗi nửa chu kỳ -> tam giác
+      // cùng quãng & tần số: tốc độ = 4*d*f (đảo ngay tại 2 đầu).
+      const pts = type === 'horizontal'
+        ? [[cx - d, cy], [cx + d, cy]]
+        : [[cx, cy - d], [cx, cy + d]];
+      return {
+        type: 'path',
+        points: pts,
+        mode: 'pingpong',
+        speed: 4 * d * f,
+        phase: clampNum((Math.sin(Math.PI * 2 * p) + 1) / 2, 0, 1, 0),
+        pivot: null
+      };
+    }
+    if (type === 'circle') {
+      const d = clampNum(raw.distance, 0, 200, 0);
+      const f = clampNum(raw.speed, 0, 50, 1);
+      const p = isNum(raw.phase) ? raw.phase : 0;
+      if (d <= 0 || !isNum(cx)) return staticMotion();
+      return {
+        type: 'path',
+        points: circlePoints(cx, cy, d, 20),
+        mode: 'loop',
+        speed: Math.PI * 2 * d * f, // chu vi * tần số
+        phase: p - Math.floor(p),
+        pivot: null
+      };
+    }
+
     if (MOTION_TYPES.indexOf(type) === -1) {
       errors.push(path + '.motion.type không hợp lệ: "' + raw.type + '" (chấp nhận: ' + MOTION_TYPES.join(', ') + ')');
       type = 'static';
     }
-    return {
-      type: type,
-      distance: clampNum(raw.distance, 0, 200, 0),
-      speed: clampNum(raw.speed, 0, 50, 2),
-      phase: isNum(raw.phase) ? raw.phase : 0
-    };
+
+    if (type === 'path') {
+      let points = null;
+      if (raw.points != null) {
+        if (!Array.isArray(raw.points)) {
+          errors.push(path + '.motion.points phải là mảng [[x,y],...]');
+        } else {
+          points = [];
+          for (let i = 0; i < raw.points.length; i++) {
+            const p = raw.points[i];
+            if (!isPair(p)) {
+              errors.push(path + '.motion.points[' + i + '] không phải [x,y]');
+              points = null;
+              break;
+            }
+            points.push([p[0], p[1]]);
+          }
+          if (points && points.length < 2) {
+            errors.push(path + '.motion.points cần ít nhất 2 điểm');
+            points = null;
+          }
+        }
+      }
+      if (!points) {
+        // Fallback: đường ngang +/-2 ô qua tâm (để level vẫn chơi được).
+        if (!isNum(cx)) return staticMotion();
+        points = [[cx - 2, cy], [cx + 2, cy]];
+      }
+      const mode = PATH_MODES.indexOf(raw.mode) !== -1 ? raw.mode : 'pingpong';
+      if (raw.mode != null && mode !== raw.mode) {
+        errors.push(path + '.motion.mode không hợp lệ (chấp nhận: ' + PATH_MODES.join(', ') + ')');
+      }
+      return {
+        type: 'path',
+        points: points,
+        mode: mode,
+        speed: clampNum(raw.speed, -200, 200, 4), // cell/giây (âm = đi ngược)
+        phase: clampNum(raw.phase, -10, 10, 0),
+        pivot: null
+      };
+    }
+
+    if (type === 'spin') {
+      return {
+        type: 'spin',
+        points: null,
+        mode: 'pingpong',
+        speed: clampNum(raw.speed, -1080, 1080, 90), // độ/giây (âm = ngược)
+        phase: clampNum(raw.phase, -36000, 36000, 0), // độ
+        pivot: isPair(raw.pivot) ? [raw.pivot[0], raw.pivot[1]] : null // null = tâm rect
+      };
+    }
+
+    return staticMotion();
+  }
+
+  // Attach: số nguyên index của wall cha (phải < index của object – chống vòng).
+  function normalizeAttach(raw, errors, path) {
+    if (raw == null) return null;
+    if (typeof raw !== 'number' || !isFinite(raw) || Math.floor(raw) !== raw || raw < 0) {
+      errors.push(path + '.attach phải là số nguyên >= 0 (index wall cha)');
+      return null;
+    }
+    return raw;
   }
 
   function normalizeRect(raw, errors, path) {
@@ -44,12 +164,15 @@
       return null;
     }
     return {
-      x: clampNum(raw.x, -500, 500, 0),
-      y: clampNum(raw.y, -500, 500, 0),
-      w: clampNum(raw.w, 0.1, 500, 1),
-      h: clampNum(raw.h, 0.1, 500, 1),
-      rot: clampNum(raw.rot, -360, 360, 0), // độ, quay quanh tâm rect
-      motion: normalizeMotion(raw.motion, errors, path)
+      x: clampNum(raw.x, -1000, 1000, 0),
+      y: clampNum(raw.y, -1000, 1000, 0),
+      w: clampNum(raw.w, 0.1, 1000, 1),
+      h: clampNum(raw.h, 0.1, 1000, 1),
+      rot: clampNum(raw.rot, -360, 360, 0), // rotate TĨNH, độ, quay quanh tâm rect
+      motion: normalizeMotion(raw.motion, errors, path,
+        clampNum(raw.x, -1000, 1000, 0) + clampNum(raw.w, 0.1, 1000, 1) / 2,
+        clampNum(raw.y, -1000, 1000, 0) + clampNum(raw.h, 0.1, 1000, 1) / 2),
+      attach: normalizeAttach(raw.attach, errors, path) // index wall cha (null = độc lập)
     };
   }
 
@@ -75,12 +198,16 @@
       errors.push(path + '.spin = 0 -> đặt lại 90 (saw luôn xoay)');
       spin = 90;
     }
+    const x = clampNum(raw.x, -1000, 1000, 0);
+    const y = clampNum(raw.y, -1000, 1000, 0);
+    const size = clampNum(raw.size, 0.25, 100, 1);
     return {
-      x: clampNum(raw.x, -500, 500, 0),
-      y: clampNum(raw.y, -500, 500, 0),
-      size: clampNum(raw.size, 0.25, 50, 1),
-      spin: clampNum(spin, -720, 720, 90),
-      motion: normalizeMotion(raw.motion, errors, path)
+      x: x,
+      y: y,
+      size: size,
+      spin: clampNum(spin, -1080, 1080, 90), // xoay răng cưa, độ/giây (visual)
+      motion: normalizeMotion(raw.motion, errors, path, x + size / 2, y + size / 2),
+      attach: normalizeAttach(raw.attach, errors, path) // index wall cha (null = độc lập)
     };
   }
 
@@ -98,8 +225,8 @@
       version: VERSION,
       name: typeof raw.name === 'string' ? raw.name.slice(0, 80) : 'Untitled',
       box: {
-        w: Math.round(clampNum(boxRaw.w, 8, 300, 36)),
-        h: Math.round(clampNum(boxRaw.h, 6, 200, 20))
+        w: Math.round(clampNum(boxRaw.w, 8, 600, 64)), // sandbox lớn: tới 600 ô
+        h: Math.round(clampNum(boxRaw.h, 6, 400, 36))
       },
       spawn: null,
       goal: null,
@@ -126,6 +253,24 @@
     if (!level.walls.length) {
       errors.push('Level không có wall nào – thêm tường nền/đường đi trong editor');
     }
+
+    // ---- Validate attach (sau khi đã build xong 2 mảng; walls trước saws) ----
+    level.walls.forEach(function (w, i) {
+      if (w.attach == null) return;
+      // Chặn vòng: wall chỉ được attach vào wall index nhỏ hơn mình.
+      if (w.attach >= i) {
+        errors.push('walls[' + i + '].attach=' + w.attach + ' phải trỏ tới wall có index nhỏ hơn (chống vòng lặp)');
+        w.attach = null;
+      }
+    });
+    level.saws.forEach(function (s, i) {
+      if (s.attach == null) return;
+      if (s.attach >= level.walls.length) {
+        errors.push('saws[' + i + '].attach=' + s.attach + ' không tồn tại (walls có ' + level.walls.length + ')');
+        s.attach = null;
+      }
+    });
+
     return level;
   }
 
@@ -186,18 +331,18 @@
     }, null, pretty === false ? 0 : 2);
   }
 
-  /** Level rỗng mặc định cho editor. */
+  /** Level rỗng mặc định cho editor – sandbox 64x36 (lớn, vừa camera mới). */
   function makeDefaultLevel() {
     return {
       format: LEVEL_FORMAT,
       version: VERSION,
       name: 'Level mới',
-      box: { w: 36, h: 20 },
-      spawn: { x: 2, y: 17 },
-      goal: { x: 32, y: 17 },
+      box: { w: 64, h: 36 },
+      spawn: { x: 2, y: 33 },
+      goal: { x: 60, y: 33 },
       checkpoints: [],
       walls: [
-        { x: 0, y: 19, w: 36, h: 1, rot: 0, motion: { type: 'static', distance: 0, speed: 2, phase: 0 } }
+        { x: 0, y: 34, w: 64, h: 2, rot: 0, motion: staticMotion(), attach: null }
       ],
       saws: []
     };
@@ -208,6 +353,8 @@
     PACK_FORMAT: PACK_FORMAT,
     VERSION: VERSION,
     MOTION_TYPES: MOTION_TYPES,
+    PATH_MODES: PATH_MODES,
+    staticMotion: staticMotion,
     parse: parse,
     parseAny: parseAny,
     stringify: stringify,
