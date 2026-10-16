@@ -54,9 +54,8 @@
 
   /** Rect (đơn vị cell, có thể xoay quanh tâm) -> fill trắng. */
   function drawWallRect(ctx, r, vt) {
-    const cx = vt.ox + (r.x + r.w / 2) * vt.scale;
-    const cy = vt.oy + (r.y + r.h / 2) * vt.scale;
-    drawWallXf(ctx, cx, cy, r.w, r.h, (r.rot || 0) * Math.PI / 180, vt);
+    drawWallXf(ctx, r.x + r.w / 2, r.y + r.h / 2, r.w, r.h,
+               (r.rot || 0) * Math.PI / 180, vt);
   }
 
   /**

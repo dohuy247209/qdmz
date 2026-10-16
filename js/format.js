@@ -45,11 +45,14 @@
    * các type legacy v1 (horizontal/vertical/circle) tự chuyển thành path.
    * Tốc độ path: cell/giây; spin: độ/giây; KHÔNG gia tốc (đổi hướng tức thì).
    */
-  function normalizeMotion(raw, errors, path, cx, cy) {
+  function normalizeMotion(raw, errors, path, cx, cy, byId) {
     if (raw == null) return staticMotion();
     if (typeof raw !== 'object') {
       errors.push(path + '.motion phải là object');
       return staticMotion();
+    }
+    if (raw.pathId && byId && byId[raw.pathId]) {
+      raw = Object.assign({}, raw, { points: byId[raw.pathId].points, mode: byId[raw.pathId].mode });
     }
     let type = typeof raw.type === 'string' ? raw.type.toLowerCase() : 'static';
 
@@ -66,6 +69,7 @@
         : [[cx, cy - d], [cx, cy + d]];
       return {
         type: 'path',
+        pathId: null,
         points: pts,
         mode: 'pingpong',
         speed: 4 * d * f,
@@ -80,6 +84,7 @@
       if (d <= 0 || !isNum(cx)) return staticMotion();
       return {
         type: 'path',
+        pathId: null,
         points: circlePoints(cx, cy, d, 20),
         mode: 'loop',
         speed: Math.PI * 2 * d * f, // chu vi * tần số
@@ -126,6 +131,7 @@
       }
       return {
         type: 'path',
+        pathId: raw.pathId || null,
         points: points,
         mode: mode,
         speed: clampNum(raw.speed, -200, 200, 4), // cell/giây (âm = đi ngược)
@@ -158,20 +164,56 @@
     return raw;
   }
 
-  function normalizeRect(raw, errors, path) {
+  function intNum(v, lo, hi, def, errors, label) {
+    const n = Math.round(clampNum(v, lo, hi, def));
+    if (isNum(v) && n !== v) errors.push(label + ' làm tròn ' + v + ' → ' + n);
+    return n;
+  }
+
+  function normalizePath(raw, errors, path) {
+    if (!raw || typeof raw !== 'object') {
+      errors.push(path + ' phải là object {id, points, mode}');
+      return null;
+    }
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : ('p' + Date.now().toString(36));
+    const mode = raw.mode === 'loop' ? 'loop' : 'pingpong';
+    if (!Array.isArray(raw.points) || raw.points.length < 2) {
+      errors.push(path + '.points phải là mảng ít nhất 2 điểm [[x,y],...]');
+      return null;
+    }
+    const points = [];
+    for (let i = 0; i < raw.points.length; i++) {
+      const p = raw.points[i];
+      if (!isPair(p)) {
+        errors.push(path + '.points[' + i + '] không hợp lệ');
+        return null;
+      }
+      points.push([p[0], p[1]]);
+    }
+    return {
+      id: id,
+      points: points,
+      mode: mode,
+      attach: normalizeAttach(raw.attach, errors, path)
+    };
+  }
+
+  function normalizeRect(raw, errors, path, byId) {
     if (!raw || typeof raw !== 'object') {
       errors.push(path + ' phải là object {x,y,w,h}');
       return null;
     }
+    const x = intNum(raw.x, -1000, 1000, 0, errors, path + '.x');
+    const y = intNum(raw.y, -1000, 1000, 0, errors, path + '.y');
+    const w = Math.max(1, intNum(raw.w, 1, 1000, 1, errors, path + '.w'));
+    const h = Math.max(1, intNum(raw.h, 1, 1000, 1, errors, path + '.h'));
     return {
-      x: clampNum(raw.x, -1000, 1000, 0),
-      y: clampNum(raw.y, -1000, 1000, 0),
-      w: clampNum(raw.w, 0.1, 1000, 1),
-      h: clampNum(raw.h, 0.1, 1000, 1),
+      x: x,
+      y: y,
+      w: w,
+      h: h,
       rot: clampNum(raw.rot, -360, 360, 0), // rotate TĨNH, độ, quay quanh tâm rect
-      motion: normalizeMotion(raw.motion, errors, path,
-        clampNum(raw.x, -1000, 1000, 0) + clampNum(raw.w, 0.1, 1000, 1) / 2,
-        clampNum(raw.y, -1000, 1000, 0) + clampNum(raw.h, 0.1, 1000, 1) / 2),
+      motion: normalizeMotion(raw.motion, errors, path, x + w / 2, y + h / 2, byId),
       attach: normalizeAttach(raw.attach, errors, path) // index wall cha (null = độc lập)
     };
   }
@@ -183,12 +225,12 @@
       return null;
     }
     return {
-      x: clampNum(raw.x, -500, 500, 0),
-      y: clampNum(raw.y, -500, 500, 0)
+      x: intNum(raw.x, -500, 500, 0, errors, path + '.x'),
+      y: intNum(raw.y, -500, 500, 0, errors, path + '.y')
     };
   }
 
-  function normalizeSaw(raw, errors, path) {
+  function normalizeSaw(raw, errors, path, byId) {
     if (!raw || typeof raw !== 'object') {
       errors.push(path + ' phải là object {x,y,size,spin?}');
       return null;
@@ -198,15 +240,15 @@
       errors.push(path + '.spin = 0 -> đặt lại 90 (saw luôn xoay)');
       spin = 90;
     }
-    const x = clampNum(raw.x, -1000, 1000, 0);
-    const y = clampNum(raw.y, -1000, 1000, 0);
-    const size = clampNum(raw.size, 0.25, 100, 1);
+    const x = intNum(raw.x, -1000, 1000, 0, errors, path + '.x');
+    const y = intNum(raw.y, -1000, 1000, 0, errors, path + '.y');
+    const size = Math.max(1, intNum(raw.size, 1, 100, 1, errors, path + '.size'));
     return {
       x: x,
       y: y,
       size: size,
       spin: clampNum(spin, -1080, 1080, 90), // xoay răng cưa, độ/giây (visual)
-      motion: normalizeMotion(raw.motion, errors, path, x + size / 2, y + size / 2),
+      motion: normalizeMotion(raw.motion, errors, path, x + size / 2, y + size / 2, byId),
       attach: normalizeAttach(raw.attach, errors, path) // index wall cha (null = độc lập)
     };
   }
@@ -231,33 +273,54 @@
       spawn: null,
       goal: null,
       checkpoints: [],
+      paths: [],
       walls: [],
       saws: []
     };
 
+    // Parse mảng paths trước, tạo map id -> path
+    const byId = {};
+    if (Array.isArray(raw.paths)) {
+      raw.paths.forEach(function (p, i) {
+        const norm = normalizePath(p, errors, 'paths[' + i + ']');
+        if (norm) {
+          level.paths.push(norm);
+          byId[norm.id] = norm;
+        }
+      });
+    }
+
     level.spawn = normalizeSquare(raw.spawn, errors, 'spawn') || { x: 2, y: level.box.h - 3 };
     level.goal = normalizeSquare(raw.goal, errors, 'goal') || { x: level.box.w - 3, y: level.box.h - 3 };
 
-    [['checkpoints', normalizeSquare], ['walls', normalizeRect], ['saws', normalizeSaw]]
-      .forEach(function (pair) {
-        const key = pair[0], fn = pair[1];
-        const arr = raw[key];
-        if (arr == null) return;
-        if (!Array.isArray(arr)) { errors.push(key + ' phải là mảng'); return; }
-        arr.forEach(function (item, i) {
-          const norm = fn(item, errors, key + '[' + i + ']');
-          if (norm) level[key].push(norm);
-        });
+    if (Array.isArray(raw.checkpoints)) {
+      raw.checkpoints.forEach(function (item, i) {
+        const norm = normalizeSquare(item, errors, 'checkpoints[' + i + ']');
+        if (norm) level.checkpoints.push(norm);
       });
+    }
+
+    if (Array.isArray(raw.walls)) {
+      raw.walls.forEach(function (item, i) {
+        const norm = normalizeRect(item, errors, 'walls[' + i + ']', byId);
+        if (norm) level.walls.push(norm);
+      });
+    }
+
+    if (Array.isArray(raw.saws)) {
+      raw.saws.forEach(function (item, i) {
+        const norm = normalizeSaw(item, errors, 'saws[' + i + ']', byId);
+        if (norm) level.saws.push(norm);
+      });
+    }
 
     if (!level.walls.length) {
       errors.push('Level không có wall nào – thêm tường nền/đường đi trong editor');
     }
 
-    // ---- Validate attach (sau khi đã build xong 2 mảng; walls trước saws) ----
+    // ---- Validate attach (sau khi đã build xong mảng walls) ----
     level.walls.forEach(function (w, i) {
       if (w.attach == null) return;
-      // Chặn vòng: wall chỉ được attach vào wall index nhỏ hơn mình.
       if (w.attach >= i) {
         errors.push('walls[' + i + '].attach=' + w.attach + ' phải trỏ tới wall có index nhỏ hơn (chống vòng lặp)');
         w.attach = null;
@@ -268,6 +331,13 @@
       if (s.attach >= level.walls.length) {
         errors.push('saws[' + i + '].attach=' + s.attach + ' không tồn tại (walls có ' + level.walls.length + ')');
         s.attach = null;
+      }
+    });
+    level.paths.forEach(function (p, i) {
+      if (p.attach == null) return;
+      if (p.attach >= level.walls.length) {
+        errors.push('paths[' + i + '].attach=' + p.attach + ' không tồn tại (walls có ' + level.walls.length + ')');
+        p.attach = null;
       }
     });
 
@@ -344,6 +414,7 @@
       spawn: { x: 2, y: 283 },
       goal: { x: 506, y: 283 },
       checkpoints: [],
+      paths: [],
       walls: [
         { x: 0, y: 284, w: 512, h: 4, rot: 0, motion: staticMotion(), attach: null }
       ],

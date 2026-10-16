@@ -13,11 +13,11 @@
   const M = global.QMMotion;
 
   const PHYS = {
-    speed: 10,        // tốc độ ngang của square (cell/giây)
+    speed: 14,        // tốc độ ngang của square (cell/giây) [10]
     gravity: 80,      // trọng lực (cell/giây^2) – [60] CHỈ áp dụng cho square
     jumpV: 30,        // vận tốc nhảy (cell/giây) -> [21] độ cao ~3.7 ô
     // maxFall: KHÔNG giới hạn – trọng lực tích lũy tự do (không cap)
-    nearDist: 0.5,    // nửa bề rộng square (0.5 ô)
+    nearDist: 0.75,    // nửa bề rộng square (0.5 ô)
     reach: 1.0,       // tầm chạm wall cho nhảy miễn phí = nearDist + half size
     airJumps: 2,      // SỐ NHẢY LIÊN TIẾP MẶC ĐỊNH (từ sàn + 1 air jump)
     deathTime: 0.35,  // thời gian chết trước khi respawn

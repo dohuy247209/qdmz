@@ -139,6 +139,7 @@ button.danger { background: #fff0ee; border-color: #e8483f; color: #c0392b; marg
 #ed-top button { padding: 6px 12px; font-size: 13px; border-width: 2px; background: #2b2b30; color: #eee; }
 #ed-top button:hover { background: #f2635b; color: #fff; }
 #ed-top button.accent { background: #e8483f; border-color: #ff9d97; }
+#ed-top button#ed-snap-btn.active { background: #2f8358; border-color: #5edb99; color: #fff; }
 #ed-top .hint { margin: 0; flex-basis: 100%; }
 
 

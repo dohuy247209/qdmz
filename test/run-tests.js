@@ -60,6 +60,7 @@ function approx(a, b, eps) { return Math.abs(a - b) <= (eps || 1e-6); }
 
 // Load đúng thứ tự như index.html.
 load('js/render.js');
+load('js/motion.js');
 load('js/format.js');
 load('js/levels.js');
 load('js/game.js');
