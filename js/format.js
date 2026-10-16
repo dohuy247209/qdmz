@@ -410,7 +410,7 @@
       format: LEVEL_FORMAT,
       version: VERSION,
       name: 'Level mới',
-      box: { w: 512, h: 288 },
+      box: { w: 150, h: 150 },
       spawn: { x: 2, y: 283 },
       goal: { x: 506, y: 283 },
       checkpoints: [],
